@@ -92,7 +92,8 @@ function Index() {
   const busy = status === "submitted" || status === "streaming";
 
   const [pip, setPip] = useState<Window | null>(null);
-  const canPip = typeof window !== "undefined" && "documentPictureInPicture" in window;
+  const [canPip, setCanPip] = useState(false);
+  useEffect(() => setCanPip("documentPictureInPicture" in window), []);
   const togglePip = async () => {
     if (pip) { pip.close(); return; }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
