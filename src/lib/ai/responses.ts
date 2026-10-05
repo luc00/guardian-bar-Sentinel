@@ -24,7 +24,7 @@ export function createResponsesCall(
   const result = streamText({
     model: provider.responses(config.model),
     // AI SDK 6 lacks `instructions`: rename this key to `system` there.
-    instructions,
+    ...(instructions ? { instructions } : {}),
     messages,
     abortSignal: request.signal,
     providerOptions: {
