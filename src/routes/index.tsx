@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Bell, BellOff, Lock, Unlock, Link2, Mail, Paperclip, ArrowUp, ShieldCheck,
-  PanelRightClose, PanelRightOpen, Trash2, Square, KeyRound, X,
+  PanelRightClose, PanelRightOpen, Trash2, Pin, PinOff, Square, KeyRound, X,
 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -58,7 +59,19 @@ function Index() {
 
   const { messages, sendMessage, status, stop, setMessages, error } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
-    onFinish: () => { if (!mutedRef.current) beep(); },
+    onFinish: ({ message }) => {
+      if (mutedRef.current) return;
+      beep();
+      const text = message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+      if (/🔴|PERICOLO/.test(text) && "Notification" in window && Notification.permission === "granted") {
+        const n = new Notification("Sentinel · Minaccia rilevata", {
+          body: text.replace(/🔴\s*PERICOLO\s*/, "").slice(0, 160),
+          icon: "/icon-192.png",
+          requireInteraction: true,
+        });
+        n.onclick = () => { window.focus(); n.close(); };
+      }
+    },
   });
 
   useEffect(() => {
@@ -78,7 +91,22 @@ function Index() {
 
   const busy = status === "submitted" || status === "streaming";
 
+  const [pip, setPip] = useState<Window | null>(null);
+  const [canPip, setCanPip] = useState(false);
+  useEffect(() => setCanPip("documentPictureInPicture" in window), []);
+  const togglePip = async () => {
+    if (pip) { pip.close(); return; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w: Window = await (window as any).documentPictureInPicture.requestWindow({ width: 380, height: 720 });
+    document.querySelectorAll('link[rel="stylesheet"], style').forEach((el) => w.document.head.appendChild(el.cloneNode(true)));
+    w.document.body.style.margin = "0";
+    w.document.body.style.height = "100vh";
+    w.addEventListener("pagehide", () => setPip(null));
+    setPip(w);
+  };
+
   const submit = () => {
+    if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
     if (locked || busy || (!input.trim() && !files?.length)) return;
     const text = input.trim() || "Analizza questo file.";
     sendMessage(files?.length ? { text, files } : { text });
@@ -109,6 +137,7 @@ function Index() {
           <PanelRightOpen className="h-4 w-4" />
         </button>
       ) : (
+        <PipHost win={pip}>
         <aside className="relative ml-auto flex h-full w-full flex-col border-l bg-background md:w-[20vw] md:min-w-[340px] md:max-w-[420px]">
           {/* Header */}
           <header className="flex items-center gap-3 border-b px-4 py-3">
@@ -127,6 +156,11 @@ function Index() {
             <IconBtn label={locked ? "Sblocca" : "Blocca"} active={locked} onClick={() => setLocked((l) => !l)}>
               {locked ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
             </IconBtn>
+            {canPip && (
+              <IconBtn label={pip ? "Riporta nella pagina" : "Sempre in primo piano"} active={!!pip} onClick={togglePip}>
+                {pip ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+              </IconBtn>
+            )}
             <IconBtn label="Riduci" onClick={() => setOpen(false)}>
               <PanelRightClose className="h-4 w-4" />
             </IconBtn>
@@ -243,6 +277,7 @@ function Index() {
             </div>
           )}
         </aside>
+        </PipHost>
       )}
     </div>
   );
@@ -269,5 +304,17 @@ function IconBtn({ children, label, onClick, active }: { children: React.ReactNo
     >
       {children}
     </button>
+  );
+}
+
+function PipHost({ win, children }: { win: Window | null; children: ReactNode }) {
+  if (!win) return <>{children}</>;
+  return (
+    <>
+      <div className="ml-auto flex h-full w-14 items-start justify-center border-l bg-background py-5">
+        <StatusDot state="active" />
+      </div>
+      {createPortal(children, win.document.body)}
+    </>
   );
 }
