@@ -80,7 +80,8 @@ function Index() {
 
   const submit = () => {
     if (locked || busy || (!input.trim() && !files?.length)) return;
-    sendMessage({ text: input.trim() || "Analizza questo file.", files: files ?? undefined });
+    const text = input.trim() || "Analizza questo file.";
+    sendMessage(files?.length ? { text, files } : { text });
     setInput("");
     setFiles(null);
     if (fileRef.current) fileRef.current.value = "";
