@@ -91,6 +91,13 @@ function Index() {
 
   const busy = status === "submitted" || status === "streaming";
 
+  const [feed, setFeed] = useState<{ total: number; updatedAt: number } | null>(null);
+  useEffect(() => {
+    const load = () => fetch("/api/threat-status").then((r) => r.json()).then(setFeed).catch(() => {});
+    load();
+    const t = setInterval(load, 30 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
   const [pip, setPip] = useState<Window | null>(null);
   const [canPip, setCanPip] = useState(false);
   useEffect(() => setCanPip("documentPictureInPicture" in window), []);
@@ -149,6 +156,11 @@ function Index() {
               <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
                 <StatusDot state={state} small /> {stateLabel}
               </div>
+              {feed && feed.total > 0 && (
+                <div className="font-mono text-[10px] text-muted-foreground/70" title="Database minacce OpenPhish + URLhaus">
+                  DB {feed.total.toLocaleString("it-IT")} minacce · {new Date(feed.updatedAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}
+                </div>
+              )}
             </div>
             <IconBtn label={muted ? "Riattiva suoni" : "Silenzia"} active={muted} onClick={() => setMuted((m) => !m)}>
               {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
