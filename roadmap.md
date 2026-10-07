@@ -1,0 +1,3 @@
+- [ ] Add independent desktop collection and per-item security judgments with honest failure states.
+- [ ] Update the desktop panel and validate scanning rules and interactions.
+- [ ] Package the updated Windows download; document Windows-only verification limits.
