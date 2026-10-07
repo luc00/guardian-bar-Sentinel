@@ -57,6 +57,12 @@
   --border: oklch(1 0 0 / 8%);
   --input: oklch(1 0 0 / 10%);
   --ring: oklch(0.86 0.2 150 / 60%);
+  --robot-shell: oklch(0.85 0.015 240);
+  --robot-shell-edge: oklch(0.6 0.025 240);
+  --robot-visor: oklch(0.19 0.018 240);
+  --robot-glow: oklch(0.86 0.13 180);
+  --robot-highlight: oklch(0.97 0.006 240);
+  --robot-shadow: oklch(0.07 0.008 240 / 45%);
 }
 
 @layer base {
@@ -87,3 +93,18 @@
 @utility animate-pulse-ring {
   animation: pulse-ring 2.2s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
 }
+
+.robot-stage { height: 160px; display: grid; place-items: center; border-bottom: 1px solid var(--border); background: var(--card); }
+.sentinel-robot { width: 220px; height: 156px; overflow: visible; }
+.robot-shell, .robot-body { fill: var(--robot-shell); stroke: var(--robot-shell-edge); stroke-width: 1; }
+.robot-ear { fill: var(--secondary); stroke: var(--robot-shell-edge); }
+.robot-visor { fill: var(--robot-visor); stroke: var(--robot-shell-edge); stroke-width: 1.5; }
+.robot-eye, .robot-beacon, .robot-emblem { fill: var(--robot-glow); filter: drop-shadow(0 0 4px var(--robot-glow)); }
+.robot-smile { fill: none; stroke: var(--robot-glow); stroke-width: 1.5; stroke-linecap: round; }
+.robot-antenna, .robot-seam { fill: none; stroke: var(--robot-shell-edge); stroke-width: 2; stroke-linecap: round; }
+.robot-highlight { fill: none; stroke: var(--robot-highlight); stroke-width: 2; stroke-linecap: round; }
+.robot-cheek { stroke: var(--robot-shell-edge); stroke-width: 2; stroke-linecap: round; }
+.robot-ground { fill: var(--robot-shadow); }
+.robot-paused .robot-eye, .robot-paused .robot-beacon, .robot-paused .robot-emblem { fill: var(--muted-foreground); filter: none; }
+@media (max-height: 600px) { .robot-stage { height: 112px; } .sentinel-robot { height: 108px; width: 153px; } }
+@media (prefers-reduced-motion: reduce) { .animate-pulse-ring, .animate-bounce { animation: none; } }

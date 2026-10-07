@@ -3,6 +3,8 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { SentinelRobot } from "@/components/SentinelRobot";
+import { Button } from "@/components/ui/button";
 import {
   Bell, BellOff, Lock, Unlock, Link2, Mail, Paperclip, ArrowUp, ShieldCheck,
   PanelRightClose, PanelRightOpen, Trash2, Pin, PinOff, Square, KeyRound, X,
@@ -146,13 +148,14 @@ function Index() {
       ) : (
         <PipHost win={pip}>
         <aside className="relative ml-auto flex h-full w-full flex-col border-l bg-background md:w-[20vw] md:min-w-[340px] md:max-w-[420px]">
+          <SentinelRobot paused={locked} />
           {/* Header */}
-          <header className="flex items-center gap-3 border-b px-4 py-3">
+          <header className="relative z-10 flex shrink-0 items-center gap-2 border-b bg-background px-4 py-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <ShieldCheck className="h-5 w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold tracking-tight">Sentinel</div>
+              <div className="text-sm font-semibold">Sentinel</div>
               <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
                 <StatusDot state={state} small /> {stateLabel}
               </div>
@@ -179,7 +182,7 @@ function Index() {
           </header>
 
           {/* Messages */}
-          <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
             {messages.length === 0 && (
               <div className="mt-6 space-y-3 text-sm text-muted-foreground">
                 <p className="text-foreground">Ciao, sono qui a proteggerti.</p>
@@ -280,7 +283,7 @@ function Index() {
           </div>
 
           {locked && (
-            <div className="absolute inset-x-0 bottom-0 top-[61px] flex flex-col items-center justify-center gap-4 bg-background/85 backdrop-blur-sm">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/85 backdrop-blur-sm">
               <Lock className="h-8 w-8 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">Sentinel è in pausa</p>
               <button onClick={() => setLocked(false)} className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground glow-primary">
@@ -308,14 +311,14 @@ function StatusDot({ state, small }: { state: "active" | "silent" | "paused"; sm
 
 function IconBtn({ children, label, onClick, active }: { children: React.ReactNode; label: string; onClick: () => void; active?: boolean }) {
   return (
-    <button
+    <Button variant="ghost" size="icon"
       onClick={onClick}
       title={label}
       aria-label={label}
-      className={`rounded-md p-1.5 transition ${active ? "bg-accent text-warning" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}
+      className={`h-7 w-7 shrink-0 rounded-md p-1.5 transition ${active ? "bg-accent text-warning" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
