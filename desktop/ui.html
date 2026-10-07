@@ -2,11 +2,13 @@
 <html lang="it">
   <head>
     <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'none'" />
     <title>Sentinel</title>
     <style>
       :root {
         --bg: #16181d; --card: #1d2026; --fg: #eceef2; --mut: #8b929e;
         --line: rgba(255,255,255,0.08); --ok: #3ee07f; --warn: #f0b429; --bad: #f2554b;
+        --hover: rgba(255,255,255,.07); --ok-soft: rgba(62,224,127,.12); --warn-soft: rgba(240,180,41,.14); --bad-soft: rgba(242,85,75,.16); --toast-bg: #272b33; --button-text: #0d2417;
       }
       * { box-sizing: border-box; margin: 0; }
       body {
@@ -16,14 +18,14 @@
       }
       header { -webkit-app-region: drag; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
       .logo { width: 30px; height: 30px; border-radius: 8px; background: rgba(62,224,127,.12); display: grid; place-items: center; color: var(--ok); font-size: 16px; }
-      .title { font-weight: 600; letter-spacing: -.2px; }
+      .title { font-weight: 600; letter-spacing: 0; }
       .sub { font: 10px/1.3 ui-monospace, monospace; color: var(--mut); text-transform: uppercase; letter-spacing: .08em; }
       .hbtns { -webkit-app-region: no-drag; margin-left: auto; display: flex; gap: 2px; }
       .hbtns button { background: none; border: 0; color: var(--mut); padding: 6px; border-radius: 6px; cursor: pointer; font-size: 14px; }
       .hbtns button:hover { background: rgba(255,255,255,.07); color: var(--fg); }
       .hbtns button.on { color: var(--ok); background: rgba(62,224,127,.12); }
       .summary { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-      .stat { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px; text-align: center; }
+      .stat { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 3px; text-align: center; }
       .stat b { display: block; font-size: 18px; }
       .stat span { font-size: 10px; color: var(--mut); }
       .s-ok b { color: var(--ok); } .s-warn b { color: var(--warn); } .s-bad b { color: var(--bad); }
@@ -31,22 +33,30 @@
       nav button { flex: 1; background: var(--card); border: 1px solid var(--line); color: var(--mut); padding: 6px; border-radius: 999px; font-size: 11px; cursor: pointer; }
       nav button.on { color: var(--ok); border-color: rgba(62,224,127,.45); }
       main { flex: 1; overflow-y: auto; padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 8px; }
-      .item { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--mut); border-radius: 10px; padding: 9px 10px; }
+      .item { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--mut); border-radius: 8px; padding: 9px 10px; }
       .item.safe { border-left-color: var(--ok); } .item.warn { border-left-color: var(--warn); } .item.danger { border-left-color: var(--bad); }
       .row { display: flex; align-items: baseline; gap: 6px; }
-      .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+      .tag { flex-shrink: 0; }
+      .unknown .tag { color: var(--mut); background: var(--hover); }
+      .toolbar { padding: 8px 12px; display: flex; gap: 6px; }
+      input, select { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px; min-width: 0; font: inherit; }
+      input { flex: 1; width: 0; }
+      .notice { padding: 0 12px 6px; color: var(--mut); font-size: 11px; overflow-wrap: anywhere; }
+      button:disabled { opacity: .5; cursor: wait; }
+      button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
       .tag { margin-left: auto; font: 9px/1 ui-monospace, monospace; padding: 3px 6px; border-radius: 999px; text-transform: uppercase; letter-spacing: .06em; }
       .safe .tag { background: rgba(62,224,127,.14); color: var(--ok); }
       .warn .tag { background: rgba(240,180,41,.14); color: var(--warn); }
       .danger .tag { background: rgba(242,85,75,.16); color: var(--bad); }
       .meta { font: 10px/1.4 ui-monospace, monospace; color: var(--mut); word-break: break-all; margin-top: 2px; }
-      ul { margin: 6px 0 0; padding-left: 15px; color: #c6cad2; font-size: 12px; }
+      ul { margin: 6px 0 0; padding-left: 15px; color: var(--fg); font-size: 12px; overflow-wrap: anywhere; }
       .acts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
       .acts button { background: rgba(255,255,255,.05); border: 1px solid var(--line); color: var(--fg); padding: 4px 9px; border-radius: 7px; font-size: 11px; cursor: pointer; }
       .acts button:hover { border-color: var(--ok); color: var(--ok); }
       .acts button.bad:hover { border-color: var(--bad); color: var(--bad); }
       .empty, .loading { color: var(--mut); text-align: center; padding: 30px 10px; font-size: 12px; }
-      footer { border-top: 1px solid var(--line); padding: 8px 12px; display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--mut); }
+      footer { border-top: 1px solid var(--line); padding: 8px 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--mut); }
       footer button { -webkit-app-region: no-drag; background: var(--ok); color: #0d2417; border: 0; padding: 5px 10px; border-radius: 7px; font-weight: 600; cursor: pointer; }
       #toast { position: fixed; left: 12px; right: 12px; bottom: 52px; background: #272b33; border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; font-size: 12px; display: none; }
     </style>
@@ -66,25 +76,29 @@
     </header>
 
     <div class="summary">
-      <div class="stat s-bad"><b id="n-bad">0</b><span>pericoli</span></div>
+      <div class="stat s-bad"><b id="n-bad">0</b><span>rischio alto</span></div>
       <div class="stat s-warn"><b id="n-warn">0</b><span>da guardare</span></div>
-      <div class="stat s-ok"><b id="n-ok">0</b><span>a posto</span></div>
+      <div class="stat s-ok"><b id="n-ok">0</b><span>senza indizi</span></div>
+      <div class="stat"><b id="n-unknown">0</b><span>non verificati</span></div>
     </div>
 
     <nav>
       <button data-t="processes" class="on">Processi</button>
-      <button data-t="connections">Rete</button>
-      <button data-t="files">File</button>
+      <button data-t="connections">Porte e rete</button>
+      <button data-t="files">File recenti</button>
     </nav>
+    <div class="toolbar"><input id="search" type="search" placeholder="Cerca nome, PID, percorso o IP" aria-label="Cerca voci" /><select id="filter" aria-label="Filtra giudizio"><option value="all">Tutti</option><option value="danger">Rischio alto</option><option value="warn">Attenzione</option><option value="unknown">Non verificati</option><option value="safe">Senza indizi</option></select></div>
+    <div id="scope" class="notice"></div>
+    <div id="section-status" class="notice" role="status"></div>
 
     <main id="list"><div class="loading">Controllo in corso…</div></main>
 
-    <div id="toast"></div>
+    <div id="toast" role="status"></div>
 
     <footer>
       <button id="scan">Controlla ora</button>
-      <button id="defender" style="background: #2c313a; color: var(--fg)">Scansione Defender</button>
       <span id="feed"></span>
+      <span>Analisi Sentinel · aggiornamento ogni 30 s</span>
     </footer>
 
     <script>
@@ -93,7 +107,7 @@
       let tab = "processes";
       const $ = (id) => document.getElementById(id);
       const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-      const LABEL = { safe: "a posto", warn: "attenzione", danger: "pericolo" };
+      const LABEL = { safe: "senza indizi", warn: "attenzione", danger: "rischio alto", unknown: "non verificato" };
 
       function toast(msg) {
         const t = $("toast");
@@ -105,9 +119,11 @@
 
       async function act(fn, args) {
         toast("Eseguo…");
-        const r = await S[fn](...args);
-        toast(r.message || (r.ok ? "Fatto." : "Non riuscito."));
-        if (r.ok) scan();
+        try {
+          const r = await S[fn](...args);
+          toast(r.message || (r.ok ? "Fatto." : "Non riuscito."));
+          if (r.ok) await scan();
+        } catch { toast("Operazione non riuscita. Riprova dal pannello."); }
       }
 
       function render() {
@@ -117,11 +133,17 @@
         $("n-bad").textContent = c("danger");
         $("n-warn").textContent = c("warn");
         $("n-ok").textContent = c("safe");
+        $("n-unknown").textContent = c("unknown");
+        $("scope").textContent = tab === "files" ? data.fileScope || "" : tab === "connections" ? "TCP attive e in ascolto · endpoint UDP" : "Processi attualmente in esecuzione · firma digitale e comandi";
+        const section = data.sections?.[tab];
+        $("section-status").textContent = section?.ok === false ? section.error : `${items.length} voci · ${data.scannedAt ? new Date(data.scannedAt).toLocaleTimeString("it-IT") : "in attesa"}`;
 
-        const order = { danger: 0, warn: 1, safe: 2 };
-        const sorted = [...items].sort((a, b) => order[a.judgement.level] - order[b.judgement.level]);
+        const order = { danger: 0, warn: 1, unknown: 2, safe: 3 };
+        const query = $("search").value.toLowerCase();
+        const filter = $("filter").value;
+        const sorted = items.filter(i => (filter === "all" || i.judgement.level === filter) && [i.name,i.path,i.pid,i.remote,i.local,i.lport,i.rport].join(" ").toLowerCase().includes(query)).sort((a, b) => order[a.judgement.level] - order[b.judgement.level]);
         if (!sorted.length) {
-          $("list").innerHTML = '<div class="empty">Niente da mostrare.</div>';
+          $("list").innerHTML = `<div class="empty">${section?.ok === false ? "Dati non disponibili: nessun giudizio possibile." : "Nessuna voce corrispondente."}</div>`;
           return;
         }
         $("list").innerHTML = sorted
@@ -130,20 +152,19 @@
             let name, meta, acts = "";
             if (tab === "processes") {
               name = esc(i.name);
-              meta = esc(i.path || "percorso non disponibile") + ` · ${i.mem ?? 0} MB`;
+              meta = `PID ${i.pid} · ${i.mem ?? 0} MB · firma ${esc(i.signature || "non verificata")}<br>` + esc(i.path || "percorso non disponibile");
               acts = `<button class="bad" data-a="kill" data-i="${idx}">Chiudi processo</button>
                       <button data-a="blockProgram" data-i="${idx}">Blocca internet</button>
-                      ${i.path ? `<button data-a="scanFile" data-i="${idx}">Scansiona</button><button data-a="folder" data-i="${idx}">Apri cartella</button>` : ""}`;
+                      ${i.path ? `<button data-a="folder" data-i="${idx}">Apri cartella</button>` : ""}`;
             } else if (tab === "connections") {
-              name = i.state === "Listen" ? `Porta ${i.lport} in ascolto` : `${esc(i.remote)}:${i.rport}`;
-              meta = `${esc(i.name || "?")} (PID ${i.pid}) · ${esc(i.state)}`;
+              name = i.state === "Listen" ? `${esc(i.protocol || "TCP")} · porta ${i.lport} in ascolto` : `${esc(i.remote)}:${i.rport}`;
+              meta = `${esc(i.name || "?")} (PID ${i.pid}) · ${esc(i.state)}<br>Locale ${esc(i.local)}:${i.lport} · ${esc(i.protocol || "TCP")}`;
               acts = `${i.state !== "Listen" ? `<button class="bad" data-a="blockIp" data-i="${idx}">Blocca indirizzo</button>` : ""}
                       <button class="bad" data-a="killConn" data-i="${idx}">Chiudi programma</button>`;
             } else {
               name = esc(i.name);
               meta = esc(i.dir) + ` · ${(i.size / 1024).toFixed(0)} KB · ${new Date(i.mtime).toLocaleString("it-IT")}`;
               acts = `<button class="bad" data-a="quarantine" data-i="${idx}">Metti in quarantena</button>
-                      <button data-a="scanFile" data-i="${idx}">Scansiona</button>
                       <button data-a="folder" data-i="${idx}">Apri cartella</button>`;
             }
             const reasons = i.judgement.reasons.length ? `<ul>${i.judgement.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : "";
@@ -163,19 +184,27 @@
             if (a === "blockProgram") act("blockProgram", [i.path, i.name]);
             if (a === "blockIp") act("blockIp", [i.remote]);
             if (a === "quarantine") act("quarantine", [i.path]);
-            if (a === "scanFile") act("defenderScan", [i.path]);
             if (a === "folder") S.openFolder(i.path);
           };
         });
       }
 
-      async function scan() {
-        $("status").textContent = "Controllo in corso…";
-        data = await S.scan();
-        if (data.platform !== "win32") $("status").textContent = "Solo su Windows";
-        else $("status").textContent = "Protezione attiva · " + new Date().toLocaleTimeString("it-IT");
-        $("feed").textContent = data.feed.total ? `${data.feed.total.toLocaleString("it-IT")} minacce note` : "elenco minacce non disponibile";
+      let scanning = false;
+      function accept(snapshot) {
+        data = snapshot;
+        const failed = Object.values(data.sections || {}).some(s => !s.ok);
+        $("status").textContent = data.platform !== "win32" ? "Solo su Windows" : (failed ? "Controllo parziale · " : "Ultimo controllo · ") + new Date(data.scannedAt).toLocaleTimeString("it-IT");
+        $("feed").textContent = data.feed?.total ? `${data.feed.total.toLocaleString("it-IT")} URL note · ${new Date(data.feed.updatedAt).toLocaleTimeString("it-IT")}` : "Feed offline · giudizi locali disponibili";
         render();
+      }
+      async function scan() {
+        if (!S || scanning) return;
+        scanning = true;
+        $("scan").disabled = true;
+        $("status").textContent = "Controllo in corso…";
+        try { accept(await S.scan()); }
+        catch { $("status").textContent = "Controllo non riuscito · dati non aggiornati"; toast("Impossibile leggere i dati del PC."); }
+        finally { scanning = false; $("scan").disabled = false; }
       }
 
       document.querySelectorAll("nav button").forEach((b) => {
@@ -186,7 +215,8 @@
         };
       });
       $("scan").onclick = scan;
-      $("defender").onclick = () => act("defenderScan", [null]);
+      $("search").oninput = render;
+      $("filter").onchange = render;
       $("hide").onclick = () => S.win("hide");
       $("quit").onclick = () => S.win("quit");
       $("top").onclick = async () => {
@@ -194,8 +224,8 @@
         $("top").classList.toggle("on", on);
       };
 
-      scan();
-      setInterval(scan, 60000);
+      if (S) { S.onSnapshot(accept); scan(); }
+      else { $("status").textContent = "Apri la versione desktop"; $("list").innerHTML = '<div class="empty">Dati del PC disponibili nell’app Windows.</div>'; $("scan").disabled = true; }
     </script>
   </body>
 </html>

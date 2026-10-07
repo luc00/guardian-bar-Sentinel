@@ -12,3 +12,4 @@
 - Threat intel comes from keyless public feeds (OpenPhish, URLhaus) fetched server-side with a 30-min in-memory cache in src/lib/threat-feed.server.ts; matches are injected into the chat instructions — no database needed, always fresh.
 - Windows desktop build lives in desktop/ (plain Electron: main.cjs does system scans/actions via PowerShell, ui.html is a standalone panel); packaged by unzipping the Electron win32 zip and copying desktop/ into resources/app, since packager/rcedit needs wine and hangs here.
 - The web assistant mascot is a standalone SVG React component with owner-window mouse listeners and frame-coalesced transforms, keeping cursor tracking lightweight and compatible with floating windows.
+- Desktop judgments use a pure security.cjs rules module with PowerShell inventory, Authenticode and optional SHA-256, never Defender; a single main-process scan publishes snapshots so monitoring continues when hidden and failures are not reported as safe.
