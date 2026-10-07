@@ -3,6 +3,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { execFile } = require("child_process");
+const security = require("./security.cjs");
 
 const isWin = process.platform === "win32";
 let win = null;
@@ -18,14 +19,15 @@ function run(cmd, args, timeout = 20000) {
   });
 }
 
-function ps(script) {
-  return run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]);
+function ps(script, timeout = 90000) {
+  return run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + script], timeout);
 }
 
 // Runs a command elevated (UAC prompt) — needed for firewall rules and killing protected processes.
 function psElevated(inner) {
-  const encoded = Buffer.from(inner, "utf16le").toString("base64");
-  return ps(`Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList '-NoProfile','-EncodedCommand','${encoded}'`);
+  const wrapped = `$ErrorActionPreference='Stop'; try { ${inner}; exit 0 } catch { exit 1 }`;
+  const encoded = Buffer.from(wrapped, "utf16le").toString("base64");
+  return ps(`$ErrorActionPreference='Stop'; $p=Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-EncodedCommand','${encoded}'; if ($p.ExitCode -ne 0) { throw 'Operazione non riuscita' }`, 120000);
 }
 
 function jsonFromPs(out) {
@@ -78,186 +80,118 @@ async function refreshFeeds() {
 
 /* ---------------- scanning ---------------- */
 
-const SYSTEM_DIRS = [/\\windows\\system32\\/i, /\\windows\\syswow64\\/i, /\\program files/i];
-const SUSPECT_DIRS = [/\\appdata\\local\\temp\\/i, /\\appdata\\roaming\\/i, /\\downloads\\/i, /\\users\\public\\/i, /\\programdata\\/i];
-const RISKY_EXT = /\.(exe|scr|bat|cmd|ps1|vbs|js|jar|msi|hta|lnk|dll|pif|com|reg)$/i;
-const LIVING_OFF_LAND = /\\(powershell|cmd|wscript|cscript|mshta|rundll32|regsvr32|certutil|bitsadmin|curl|wget|schtasks)\.exe$/i;
-
-function judgeProcess(p) {
-  const reasons = [];
-  let score = 0;
-  const pth = p.path || "";
-  if (!pth) {
-    reasons.push("Percorso non leggibile (processo protetto o di sistema)");
-  } else {
-    if (SUSPECT_DIRS.some((r) => r.test(pth))) {
-      score += 2;
-      reasons.push("Si avvia da una cartella temporanea o di download");
-    }
-    if (!p.company) {
-      score += 1;
-      reasons.push("Nessun editore dichiarato");
-    }
-    if (p.signature && p.signature !== "Valid") {
-      score += 2;
-      reasons.push("Firma digitale assente o non valida");
-    }
-    if (LIVING_OFF_LAND.test(pth) && SUSPECT_DIRS.some((r) => r.test(p.cmd || ""))) {
-      score += 2;
-      reasons.push("Strumento di sistema usato su file in cartelle sospette");
-    }
-    if (/\\windows\\/i.test(pth) && !SYSTEM_DIRS.some((r) => r.test(pth))) {
-      score += 2;
-      reasons.push("Si trova nella cartella Windows ma fuori dalle posizioni di sistema");
-    }
-  }
-  if (p.cpu > 60) {
-    score += 1;
-    reasons.push("Uso della CPU molto alto");
-  }
-  return { level: score >= 3 ? "danger" : score >= 1 ? "warn" : "safe", reasons };
+async function collect(script) {
+  const r = await ps("$ErrorActionPreference='Stop'; " + script);
+  if (!r.ok) throw new Error('Accesso ai dati non riuscito: ' + r.err.slice(0, 240));
+  const text = r.out.trim();
+  if (!text || text === 'null') return [];
+  try { const v = JSON.parse(text); return Array.isArray(v) ? v : [v]; }
+  catch { throw new Error('Risposta di Windows non leggibile.'); }
 }
 
 async function scanProcesses() {
-  if (!isWin) return [];
-  const script = `
-$ErrorActionPreference='SilentlyContinue'
-Get-Process | Where-Object { $_.Id -gt 4 } | ForEach-Object {
-  $p=$_; $sig=$null
-  if ($p.Path) { $sig = (Get-AuthenticodeSignature -FilePath $p.Path).Status.ToString() }
-  [PSCustomObject]@{
-    pid=$p.Id; name=$p.ProcessName; path=$p.Path
-    company=$p.Company; cpu=[math]::Round($p.CPU,1)
-    mem=[math]::Round($p.WorkingSet64/1MB,1); signature=$sig
+  const rows = await collect(`
+$commands=@{}; Get-CimInstance Win32_Process | ForEach-Object { $commands[[int]$_.ProcessId]=$_.CommandLine }
+$signatures=@{}
+@(Get-Process | ForEach-Object {
+  $p=$_; $pth=$null; $sig=$null; $company=$null
+  try { $pth=$p.Path; $company=$p.Company } catch {}
+  if ($pth) {
+    if (-not $signatures.ContainsKey($pth)) {
+      try { $signatures[$pth]=(Get-AuthenticodeSignature -LiteralPath $pth -ErrorAction Stop).Status.ToString() }
+      catch { $signatures[$pth]='UnknownError' }
+    }
+    $sig=$signatures[$pth]
   }
-} | Sort-Object -Property mem -Descending | Select-Object -First 80 | ConvertTo-Json -Compress`;
-  const { out } = await ps(script);
-  return jsonFromPs(out).map((p) => ({ ...p, judgement: judgeProcess(p) }));
-}
-
-const SAFE_PORTS = new Set([80, 443, 53, 123, 993, 587, 22]);
-const RISKY_PORTS = new Map([
-  [3389, "Desktop remoto esposto"],
-  [445, "Condivisione file Windows"],
-  [23, "Telnet, protocollo non cifrato"],
-  [21, "FTP, protocollo non cifrato"],
-  [5900, "VNC, controllo remoto"],
-  [4444, "Porta usata spesso da malware"],
-  [1337, "Porta usata spesso da malware"],
-  [6667, "IRC, usato da botnet"],
-]);
-
-function isPrivate(ip) {
-  return /^(10\.|127\.|0\.0\.0\.0|::|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1)/.test(ip);
+  [PSCustomObject]@{ pid=$p.Id; name=$p.ProcessName; path=$pth; cmd=$commands[[int]$p.Id];
+    company=$company; cpuSeconds=[math]::Round($p.CPU,1); mem=[math]::Round($p.WorkingSet64/1MB,1); signature=$sig }
+}) | ConvertTo-Json -Compress -Depth 4`);
+  return rows.map(p => ({ ...p, judgement: security.judgeProcess(p) }));
 }
 
 async function scanConnections() {
-  if (!isWin) return [];
-  const script = `
-$ErrorActionPreference='SilentlyContinue'
+  return collect(`
 $procs=@{}; Get-Process | ForEach-Object { $procs[$_.Id]=$_.ProcessName }
-Get-NetTCPConnection | Where-Object { $_.State -eq 'Established' -or $_.State -eq 'Listen' } | ForEach-Object {
-  [PSCustomObject]@{
-    local=$_.LocalAddress; lport=$_.LocalPort; remote=$_.RemoteAddress; rport=$_.RemotePort
-    state=$_.State.ToString(); pid=$_.OwningProcess; name=$procs[[int]$_.OwningProcess]
-  }
-} | Select-Object -First 120 | ConvertTo-Json -Compress`;
-  const { out } = await ps(script);
-  return jsonFromPs(out).map((c) => {
-    const reasons = [];
-    let level = "safe";
-    const listening = c.state === "Listen";
-    if (feed.ips.has(String(c.remote))) {
-      level = "danger";
-      reasons.push("L'indirizzo remoto è nell'elenco URLhaus delle minacce");
-    }
-    if (listening && RISKY_PORTS.has(c.lport) && !isPrivate(c.local)) {
-      level = level === "danger" ? level : "danger";
-      reasons.push(`Porta ${c.lport} aperta verso l'esterno: ${RISKY_PORTS.get(c.lport)}`);
-    } else if (listening && RISKY_PORTS.has(c.lport)) {
-      if (level !== "danger") level = "warn";
-      reasons.push(`Porta ${c.lport} in ascolto: ${RISKY_PORTS.get(c.lport)}`);
-    }
-    if (!listening && !isPrivate(String(c.remote)) && !SAFE_PORTS.has(c.rport) && c.rport > 1024) {
-      if (level === "safe") level = "warn";
-      reasons.push(`Collegamento verso una porta insolita (${c.rport})`);
-    }
-    return { ...c, judgement: { level, reasons } };
-  });
+$tcp=@(Get-NetTCPConnection | Where-Object { $_.State -eq 'Established' -or $_.State -eq 'Listen' } | ForEach-Object {
+  [PSCustomObject]@{ protocol='TCP'; local=$_.LocalAddress; lport=$_.LocalPort; remote=$_.RemoteAddress; rport=$_.RemotePort;
+    state=$_.State.ToString(); pid=$_.OwningProcess; name=$procs[[int]$_.OwningProcess] }
+})
+$udp=@(Get-NetUDPEndpoint | ForEach-Object {
+  [PSCustomObject]@{ protocol='UDP'; local=$_.LocalAddress; lport=$_.LocalPort; remote=''; rport=0;
+    state='Listen'; pid=$_.OwningProcess; name=$procs[[int]$_.OwningProcess] }
+})
+@($tcp + $udp) | ConvertTo-Json -Compress -Depth 4`);
 }
 
 async function scanFiles() {
-  if (!isWin) return [];
-  const home = os.homedir();
-  const dirs = [path.join(home, "Downloads"), path.join(home, "Desktop"), path.join(os.tmpdir())];
-  const items = [];
-  for (const dir of dirs) {
-    let names = [];
-    try {
-      names = fs.readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const n of names) {
-      const full = path.join(dir, n);
-      let st;
-      try {
-        st = fs.statSync(full);
-      } catch {
-        continue;
-      }
-      if (!st.isFile()) continue;
-      if (Date.now() - st.mtimeMs > 7 * 24 * 3600 * 1000) continue;
-      items.push({ name: n, path: full, dir, size: st.size, mtime: st.mtimeMs });
+  // Resolve redirected Windows folders, include OneDrive Desktop when configured.
+  return (await collect(`
+$folders=Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders'
+$downloads=[Environment]::ExpandEnvironmentVariables($folders.'{374DE290-123F-4565-9164-39C4925E467B}')
+$dirs=@($downloads,[Environment]::GetFolderPath('Desktop'),[IO.Path]::GetTempPath()) | Where-Object { $_ } | Select-Object -Unique
+$cutoff=(Get-Date).AddDays(-7)
+$items=@(foreach ($dir in $dirs) {
+  if (Test-Path -LiteralPath $dir) {
+    Get-ChildItem -LiteralPath $dir -File -ErrorAction Stop | Where-Object { $_.LastWriteTime -gt $cutoff }
+  }
+})
+@($items | Sort-Object LastWriteTime -Descending | Select-Object -First 100 | ForEach-Object {
+  $f=$_; $sig=$null; $hash=$null; $error=$null
+  if ($f.Extension -match '^\\.(exe|scr|bat|cmd|ps1|vbs|js|jar|msi|hta|lnk|dll|pif|com|reg)$') {
+    try { $sig=(Get-AuthenticodeSignature -LiteralPath $f.FullName -ErrorAction Stop).Status.ToString() } catch { $sig='UnknownError' }
+    if ($f.Length -le 50MB) {
+      try { $hash=(Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $error='File non leggibile' }
     }
   }
-  items.sort((a, b) => b.mtime - a.mtime);
-  const top = items.slice(0, 60);
-  for (const f of top) {
-    const reasons = [];
-    let level = "safe";
-    if (RISKY_EXT.test(f.name)) {
-      level = "warn";
-      reasons.push("File eseguibile: può avviare programmi");
-    }
-    if (/\.(pdf|docx?|xlsx?|jpg|png|txt|zip)\.(exe|scr|js|bat|cmd|vbs)$/i.test(f.name)) {
-      level = "danger";
-      reasons.push("Doppia estensione: finge di essere un documento");
-    }
-    if (/[\u202e\u200f]/.test(f.name)) {
-      level = "danger";
-      reasons.push("Nome del file con caratteri nascosti che invertono l'estensione");
-    }
-    if (RISKY_EXT.test(f.name) && /\\temp\\/i.test(f.dir)) {
-      level = "danger";
-      reasons.push("Eseguibile nella cartella temporanea");
-    }
-    if (level !== "safe" && RISKY_EXT.test(f.name)) {
-      const { out } = await ps(`(Get-AuthenticodeSignature -FilePath '${f.path.replace(/'/g, "''")}').Status.ToString()`);
-      const sig = out.trim();
-      f.signature = sig;
-      if (sig && sig !== "Valid") reasons.push("Firma digitale assente o non valida");
-      else if (sig === "Valid" && level === "warn") {
-        level = "safe";
-        reasons.length = 0;
-        reasons.push("Firmato da un editore riconosciuto");
-      }
-    }
-    f.judgement = { level, reasons };
-  }
-  return top;
+  [PSCustomObject]@{ name=$f.Name; path=$f.FullName; dir=$f.DirectoryName; size=$f.Length;
+    mtime=([DateTimeOffset]$f.LastWriteTimeUtc).ToUnixTimeMilliseconds(); signature=$sig; sha256=$hash; error=$error }
+}) | ConvertTo-Json -Compress -Depth 4`)).map(f => ({ ...f, judgement: security.judgeFile(f) }));
+}
+
+let snapshot = null;
+let pendingScan = null;
+async function performScan() {
+  if (pendingScan) return pendingScan;
+  pendingScan = (async () => {
+    const startedAt = Date.now();
+    const jobs = isWin ? await Promise.allSettled([scanProcesses(), scanConnections(), scanFiles()]) : [];
+    const sections = {}; const values = {};
+    ['processes','connections','files'].forEach((key, idx) => {
+      const job = jobs[idx];
+      values[key] = job?.status === 'fulfilled' ? job.value : [];
+      sections[key] = { ok: job?.status === 'fulfilled', error: !isWin ? 'Raccolta disponibile solo su Windows.' : job?.status === 'rejected' ? job.reason.message : null };
+    });
+    const owners = new Map(values.processes.map(p => [p.pid, p]));
+    values.connections = values.connections.map(c => ({ ...c, judgement: security.judgeConnection(c, feed.ips, owners.get(c.pid)) }));
+    snapshot = { ...values, sections, startedAt, scannedAt: Date.now(), platform: process.platform,
+      feed: { total: feed.total, updatedAt: feed.updatedAt }, fileScope: 'Ultimi 7 giorni · Download, Desktop, Temp · max 100 file · nessuna sottocartella' };
+    const danger = [...values.processes, ...values.connections, ...values.files].filter(i => i.judgement.level === 'danger');
+    if (danger.length) alertThreat('Sentinel · Rischio elevato', `${danger[0].name || danger[0].remote}: ${danger[0].judgement.reasons[0]}`);
+    if (win && !win.isDestroyed()) win.webContents.send('snapshot', snapshot);
+    return snapshot;
+  })();
+  try { return await pendingScan; } finally { pendingScan = null; }
 }
 
 /* ---------------- actions ---------------- */
 
 async function killProcess(pid, name) {
-  let r = await ps(`Stop-Process -Id ${Number(pid)} -Force -ErrorAction Stop`);
-  if (!r.ok) r = await psElevated(`Stop-Process -Id ${Number(pid)} -Force`);
+  const target = snapshot?.processes.find(p => p.pid === pid);
+  if (!Number.isInteger(pid) || pid <= 4 || pid === process.pid || !target || /^(csrss|wininit|winlogon|lsass|services|smss)$/i.test(target.name))
+    return { ok: false, message: 'Processo non selezionabile o essenziale per Windows.' };
+  const choice = await dialog.showMessageBox(win, { type: 'warning', buttons: ['Chiudi processo', 'Annulla'], defaultId: 1, cancelId: 1, message: `Chiudere ${target.name} (PID ${pid})?`, detail: 'I dati non salvati potrebbero andare persi.' });
+  if (choice.response !== 0) return { ok: false, message: 'Annullato.' };
+  // Recheck executable identity to avoid acting on a reused PID.
+  const expected = String(target.path || '').replace(/'/g, "''");
+  if (!expected) return { ok: false, message: 'Percorso non leggibile: chiusura non consentita.' };
+  const stop = `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${pid}; if ($p.Path -ne '${expected}') { throw 'Il processo è cambiato' }; Stop-Process -Id ${pid} -Force -ErrorAction Stop`;
+  let r = await ps(stop);
+  if (!r.ok) r = await psElevated(stop);
   return { ok: r.ok, message: r.ok ? `Processo ${name} chiuso.` : `Non sono riuscito a chiudere ${name}. Potrebbe essere protetto dal sistema.` };
 }
 
 async function blockIp(ip) {
-  if (!/^[0-9a-f.:]+$/i.test(String(ip))) return { ok: false, message: "Indirizzo non valido." };
+  if (!security.validIp(ip) || ip === "0.0.0.0" || ip === "::") return { ok: false, message: "Indirizzo non valido." };
   const rule = `Sentinel blocco ${ip}`;
   const r = await psElevated(
     `New-NetFirewallRule -DisplayName '${rule}' -Direction Outbound -RemoteAddress ${ip} -Action Block -Profile Any; ` +
@@ -267,34 +201,27 @@ async function blockIp(ip) {
 }
 
 async function blockProgram(exePath, name) {
-  if (!exePath) return { ok: false, message: "Percorso del programma sconosciuto." };
+  if (!snapshot?.processes.some(p => p.path === exePath)) return { ok: false, message: "Percorso del programma sconosciuto." };
   const safe = exePath.replace(/'/g, "''");
   const r = await psElevated(
-    `New-NetFirewallRule -DisplayName 'Sentinel blocco ${name}' -Direction Outbound -Program '${safe}' -Action Block -Profile Any`,
+    `New-NetFirewallRule -DisplayName 'Sentinel blocco ${String(name).replace(/'/g, "''")}' -Direction Outbound -Program '${safe}' -Action Block -Profile Any`,
   );
   return { ok: r.ok, message: r.ok ? `${name} non può più collegarsi a internet.` : "Blocco non riuscito: servono i permessi di amministratore." };
 }
 
 async function quarantineFile(filePath) {
+  if (!snapshot?.files.some(f => f.path === filePath)) return { ok: false, message: 'File non presente nell’ultima scansione.' };
   const qdir = path.join(app.getPath("userData"), "quarantena");
   try {
     fs.mkdirSync(qdir, { recursive: true });
     const dest = path.join(qdir, `${Date.now()}_${path.basename(filePath)}.bloccato`);
     fs.renameSync(filePath, dest);
-    await ps(`icacls '${dest.replace(/'/g, "''")}' /inheritance:r /deny '*S-1-1-0:(RX,X)'`);
+    const acl = await run('icacls.exe', [dest, '/inheritance:r', '/deny', '*S-1-1-0:(RX,X)']);
+    if (!acl.ok) return { ok: false, message: 'File spostato, ma blocco dei permessi non riuscito. Non aprirlo.', dest };
     return { ok: true, message: `File messo in quarantena. Copia bloccata in ${qdir}.`, dest };
   } catch (e) {
     return { ok: false, message: `Quarantena non riuscita: ${e.message}` };
   }
-}
-
-async function defenderScan(target) {
-  const r = await psElevated(
-    target
-      ? `Start-MpScan -ScanType CustomScan -ScanPath '${String(target).replace(/'/g, "''")}'`
-      : `Start-MpScan -ScanType QuickScan`,
-  );
-  return { ok: r.ok, message: r.ok ? "Scansione di Windows Defender avviata." : "Non sono riuscito ad avviare la scansione." };
 }
 
 /* ---------------- alerts ---------------- */
@@ -332,10 +259,12 @@ function createWindow() {
     resizable: true,
     backgroundColor: "#16181d",
     icon: path.join(__dirname, "icon.png"),
-    webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false },
+    webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.setAlwaysOnTop(true, "screen-saver");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', event => event.preventDefault());
   win.loadFile(path.join(__dirname, "ui.html"));
 }
 
@@ -355,17 +284,7 @@ function createTray() {
 
 /* ---------------- ipc ---------------- */
 
-ipcMain.handle("scan", async () => {
-  const [processes, connections, files] = await Promise.all([scanProcesses(), scanConnections(), scanFiles()]);
-  const danger = [
-    ...processes.filter((p) => p.judgement.level === "danger").map((p) => ({ what: `Processo ${p.name}`, why: p.judgement.reasons[0] })),
-    ...connections.filter((c) => c.judgement.level === "danger").map((c) => ({ what: `Connessione ${c.remote}:${c.rport}`, why: c.judgement.reasons[0] })),
-    ...files.filter((f) => f.judgement.level === "danger").map((f) => ({ what: `File ${f.name}`, why: f.judgement.reasons[0] })),
-  ];
-  if (danger.length) alertThreat("Sentinel · Minaccia rilevata", `${danger[0].what}: ${danger[0].why}${danger.length > 1 ? ` (+${danger.length - 1} altre)` : ""}`);
-  return { processes, connections, files, feed: { total: feed.total, updatedAt: feed.updatedAt }, platform: process.platform };
-});
-
+ipcMain.handle("scan", () => performScan());
 ipcMain.handle("refresh-feeds", () => refreshFeeds());
 ipcMain.handle("kill", (_e, { pid, name }) => killProcess(pid, name));
 ipcMain.handle("block-ip", (_e, { ip }) => blockIp(ip));
@@ -381,7 +300,6 @@ ipcMain.handle("quarantine", async (_e, { path: p }) => {
   if (choice.response !== 0) return { ok: false, message: "Annullato." };
   return quarantineFile(p);
 });
-ipcMain.handle("defender-scan", (_e, { target } = {}) => defenderScan(target));
 ipcMain.handle("open-folder", (_e, { path: p }) => shell.showItemInFolder(p));
 ipcMain.handle("win", (_e, { action }) => {
   if (!win) return;
@@ -398,7 +316,8 @@ ipcMain.handle("win", (_e, { action }) => {
 app.whenReady().then(() => {
   createWindow();
   createTray();
-  refreshFeeds();
+  refreshFeeds().then(() => performScan());
+  setInterval(() => performScan(), 30000);
   setInterval(refreshFeeds, 30 * 60 * 1000);
   app.setLoginItemSettings({ openAtLogin: true });
 });
