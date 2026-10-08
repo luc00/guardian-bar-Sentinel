@@ -1,6 +1,5 @@
 const { app, BrowserWindow, ipcMain, Notification, Tray, Menu, shell, dialog } = require("electron");
 const path = require("path");
-const os = require("os");
 const fs = require("fs");
 const { execFile } = require("child_process");
 const security = require("./security.cjs");
@@ -30,17 +29,6 @@ function psElevated(inner) {
   return ps(`$ErrorActionPreference='Stop'; $p=Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-EncodedCommand','${encoded}'; if ($p.ExitCode -ne 0) { throw 'Operazione non riuscita' }`, 120000);
 }
 
-function jsonFromPs(out) {
-  const t = out.trim();
-  if (!t) return [];
-  try {
-    const v = JSON.parse(t);
-    return Array.isArray(v) ? v : [v];
-  } catch {
-    return [];
-  }
-}
-
 /* ---------------- threat feeds ---------------- */
 
 const FEEDS = [
@@ -55,14 +43,16 @@ async function refreshFeeds() {
   let total = 0;
   for (const f of FEEDS) {
     try {
-      const res = await fetch(f.url, { headers: { "User-Agent": "Sentinel-Desktop/1.0" } });
+      const res = await fetch(f.url, { headers: { "User-Agent": "Sentinel-Desktop/1.1" }, signal: AbortSignal.timeout(15000) });
       if (!res.ok) continue;
       for (const line of (await res.text()).split("\n")) {
         const l = line.trim();
         if (!l || l.startsWith("#")) continue;
-        total++;
         try {
-          const h = new URL(l).hostname.toLowerCase();
+          const url = new URL(l);
+          if (!['http:', 'https:'].includes(url.protocol)) continue;
+          total++;
+          const h = url.hostname.toLowerCase();
           if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) ips.add(h);
           else hosts.set(h, f.name);
         } catch {}
@@ -136,15 +126,15 @@ $items=@(foreach ($dir in $dirs) {
   }
 })
 @($items | Sort-Object LastWriteTime -Descending | Select-Object -First 100 | ForEach-Object {
-  $f=$_; $sig=$null; $hash=$null; $error=$null
+  $f=$_; $sig=$null; $hash=$null; $fileError=$null
   if ($f.Extension -match '^\\.(exe|scr|bat|cmd|ps1|vbs|js|jar|msi|hta|lnk|dll|pif|com|reg)$') {
     try { $sig=(Get-AuthenticodeSignature -LiteralPath $f.FullName -ErrorAction Stop).Status.ToString() } catch { $sig='UnknownError' }
     if ($f.Length -le 50MB) {
-      try { $hash=(Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $error='File non leggibile' }
+      try { $hash=(Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $fileError='File non leggibile' }
     }
   }
   [PSCustomObject]@{ name=$f.Name; path=$f.FullName; dir=$f.DirectoryName; size=$f.Length;
-    mtime=([DateTimeOffset]$f.LastWriteTimeUtc).ToUnixTimeMilliseconds(); signature=$sig; sha256=$hash; error=$error }
+    mtime=([DateTimeOffset]$f.LastWriteTimeUtc).ToUnixTimeMilliseconds(); signature=$sig; sha256=$hash; error=$fileError }
 }) | ConvertTo-Json -Compress -Depth 4`)).map(f => ({ ...f, judgement: security.judgeFile(f) }));
 }
 
@@ -201,7 +191,7 @@ async function blockIp(ip) {
 }
 
 async function blockProgram(exePath, name) {
-  if (!snapshot?.processes.some(p => p.path === exePath)) return { ok: false, message: "Percorso del programma sconosciuto." };
+  if (typeof exePath !== 'string' || !exePath || !snapshot?.processes.some(p => p.path === exePath)) return { ok: false, message: "Percorso del programma sconosciuto." };
   const safe = exePath.replace(/'/g, "''");
   const r = await psElevated(
     `New-NetFirewallRule -DisplayName 'Sentinel blocco ${String(name).replace(/'/g, "''")}' -Direction Outbound -Program '${safe}' -Action Block -Profile Any`,
@@ -316,7 +306,8 @@ ipcMain.handle("win", (_e, { action }) => {
 app.whenReady().then(() => {
   createWindow();
   createTray();
-  refreshFeeds().then(() => performScan());
+  performScan();
+  refreshFeeds();
   setInterval(() => performScan(), 30000);
   setInterval(refreshFeeds, 30 * 60 * 1000);
   app.setLoginItemSettings({ openAtLogin: true });

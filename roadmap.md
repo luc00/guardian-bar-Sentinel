@@ -1,3 +1,4 @@
-- [ ] Add independent desktop collection and per-item security judgments with honest failure states.
-- [ ] Update the desktop panel and validate scanning rules and interactions.
-- [ ] Package the updated Windows download; document Windows-only verification limits.
+- [x] Add independent desktop collection and per-item security judgments with honest failure states.
+- [x] Update the desktop panel and validate scanning rules and interactions with synthetic fixtures.
+- [x] Package the updated Windows download; document Windows-only verification limits.
+- [ ] Verify inventory and privileged actions on a real Windows PC — blocked by Linux-only environment.
